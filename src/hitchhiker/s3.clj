@@ -76,6 +76,17 @@
        (write-object bucket (str node-key "/->" key) (byte-array 0))
        (write-object bucket (str key "/<-" node-key) (byte-array 0))))))
 
+(defn get-root-key
+  [tree]
+  (-> tree :storage-addr (deref 10 nil)))
+
+(defn create-tree-from-root-key
+  [bucket root-key]
+  (let [last-key (core/last-key (with-open [in (:input-stream (s3/get-object bucket root-key))]
+                                  (nippy/thaw (ByteStreams/toByteArray in))))] ; need last key to bootstrap
+    (core/resolve
+      (->S3Addr last-key bucket root-key (synthesize-storage-addr root-key)))))
+
 (defrecord S3Backend [#_service bucket]
   core/IBackend
   (new-session [_]
