@@ -10,6 +10,8 @@
 (defprotocol IAddress
   (-dirty? [node] "Returns true if this should be flushed")
   (-dirty! [node] "Marks a node as being dirty if it was clean")
+  (-ops-dirty? [node] "Returns true if this should be flushed (ops buffers only)")
+  (-ops-dirty! [node] "Marks a node's ops buffer as dirty")
   (-resolve-chan [node] "Returns the INode version of this node; could trigger IO, returns a core.async promise-chan"))
 
 (defprotocol INode

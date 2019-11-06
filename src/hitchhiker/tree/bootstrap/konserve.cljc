@@ -1,22 +1,23 @@
 (ns hitchhiker.tree.bootstrap.konserve
   (:refer-clojure :exclude [subvec])
   (:require
-   [clojure.core.rrb-vector :refer [catvec subvec]]
-   [konserve.cache :as k]
-   [konserve.memory :refer [new-mem-store]]
-   [hasch.core :as h]
-   [clojure.set :as set]
-   [hitchhiker.tree.messaging :as msg]
-   [hitchhiker.tree :as tree]
-   [hitchhiker.tree.node :as n]
-   [hitchhiker.tree.backend :as b]
-   [hitchhiker.tree.key-compare :as c]
-   [hitchhiker.tree.utils.async :as ha]
-   [hitchhiker.tree.codec.nippy :as nippy]
-   #?@(:clj [[clojure.core.async :as async]
-             [clojure.core.cache :as cache]]
-       :cljs [[cljs.core.async :include-macros true :as async]
-              [cljs.cache :as cache]])))
+    [clojure.core.rrb-vector :refer [catvec subvec]]
+    [konserve.cache :as k]
+    [konserve.memory :refer [new-mem-store]]
+    [hasch.core :as h]
+    [clojure.set :as set]
+    [hitchhiker.tree.messaging :as msg]
+    [hitchhiker.tree :as tree]
+    [hitchhiker.tree.node :as n]
+    [hitchhiker.tree.backend :as b]
+    [hitchhiker.tree.key-compare :as c]
+    [hitchhiker.tree.utils.async :as ha]
+    [hitchhiker.tree.codec.nippy :as nippy]
+    #?@(:clj  [[clojure.core.async :as async]
+               [clojure.core.cache :as cache]]
+        :cljs [[cljs.core.async :include-macros true :as async]
+               [cljs.cache :as cache]])
+    [hitchhiker.tree :as core]))
 
 (declare encode)
 
@@ -29,7 +30,7 @@
 (defn encode-index-node
   [node]
   (-> node
-      (nilify [:storage-addr :*last-key-cache])
+      (nilify [:storage-addr :*last-key-cache :ops-storage-addr])
       (assoc :children (mapv encode (:children node)))))
 
 (defn encode-data-node
@@ -57,6 +58,32 @@
   [key]
   (ha/promise-chan key))
 
+(defrecord KonserveOpsAddr [store konserve-key]
+  n/IAddress
+  (-dirty? [_] false)
+  (-dirty! [this] this)
+  (-ops-dirty? [_] false)
+  (-ops-dirty! [this] this)
+
+  (-resolve-chan [_]
+    (ha/go-try
+      (let [cache (:cache store)]
+        (if-let [v (cache/lookup @cache konserve-key)]
+          (do
+            (swap! cache cache/hit konserve-key)
+            v)
+          (let [ch (k/get-in store [konserve-key])
+                result (ha/if-async?
+                         (ha/<? ch)
+                         (async/<!! ch))]
+            (when result
+              (swap! cache cache/miss konserve-key result))
+            result))))))
+
+(defn konserve-ops-addr
+  [store konserve-key]
+  (->KonserveOpsAddr store konserve-key))
+
 (defrecord KonserveAddr [store last-key konserve-key storage-addr]
   n/INode
   (-last-key [_] last-key)
@@ -64,19 +91,31 @@
   n/IAddress
   (-dirty? [_] false)
   (-dirty! [this] this)
+  (-ops-dirty? [_] false)
+  (-ops-dirty! [this] this)
 
   (-resolve-chan [this]
     (ha/go-try
-     (let [cache (:cache store)]
-       (if-let [v (cache/lookup @cache konserve-key)]
-         (do
-           (swap! cache cache/hit konserve-key)
-           (assoc v :storage-addr (synthesize-storage-address konserve-key)))
-         (let [ch (k/get-in store [konserve-key])]
-           (assoc (ha/if-async?
-                   (ha/<? ch)
-                   (async/<!! ch))
-                  :storage-addr (synthesize-storage-address konserve-key))))))))
+      (let [cache (:cache store)
+            node (if-let [v (cache/lookup @cache konserve-key)]
+                   (do
+                     (swap! cache cache/hit konserve-key)
+                     (assoc v :storage-addr (synthesize-storage-address this)))
+                   (let [ch (k/get-in store [konserve-key])]
+                     (assoc (ha/if-async?
+                              (ha/<? ch)
+                              (async/<!! ch))
+                            :storage-addr (synthesize-storage-address this))))
+            node (if (tree/index-node? node)
+                   (let [ops-addr (konserve-ops-addr store (str "ops." konserve-key))]
+                     (if-let [op-buf (some-> ops-addr
+                                             (n/-resolve-chan)
+                                             (ha/<?))]
+                       (assoc node :op-buf op-buf
+                                   :ops-storage-addr (synthesize-storage-address ops-addr))
+                       (update node :op-buf #(or % []))))
+                   node)]
+        node))))
 
 (defn konserve-addr
   [store last-key konserve-key]
@@ -90,16 +129,26 @@
   (-new-session [_] (atom {:writes 0 :deletes 0}))
   (-anchor-root [_ {:keys [konserve-key] :as node}]
     node)
-  (-write-node [_ node session]
+  (-write-node [this node session]
     (ha/go-try
-     (swap! session update-in [:writes] inc)
-     (let [pnode (encode node)
-           id (h/uuid pnode)
-           ch (k/assoc-in store [id] node)]
-       (ha/<? ch)
-       (konserve-addr store
-                      (n/-last-key node)
-                      id))))
+      (swap! session update-in [:writes] inc)
+      (let [pnode (encode node)
+            id (h/uuid pnode)
+            pnode (nilify pnode [:op-buf])
+            ch (k/assoc-in store [id] pnode)
+            addr (konserve-addr store (n/-last-key node) id)
+            op-ch (when (core/index-node? node)
+                    (b/-write-ops-buffer this addr (:op-buf node) session))]
+        (ha/<? ch)
+        [addr (some-> op-ch (ha/<?))])))
+  (-write-ops-buffer [_ node-address ops-buffer session]
+    (ha/go-try
+      (swap! session update :writes inc)
+      (let [buffer (into [] ops-buffer)
+            id (str "ops." (:konserve-key node-address))
+            ch (k/assoc-in store [id] buffer)]
+        (ha/<? ch)
+        (konserve-ops-addr store id))))
   (-delete-addr [_ addr session]
     (swap! session update :deletes inc)))
 
@@ -117,10 +166,10 @@
               (ha/<? ch)
               (async/<!! ch))
          ;; need last key to bootstrap
-            last-key (n/-last-key (assoc val :storage-addr (synthesize-storage-address root-key)))]
-        (ha/<? (n/-resolve-chan (konserve-addr store
-                                               last-key
-                                               root-key))))))
+         last-key (n/-last-key (assoc val :storage-addr (synthesize-storage-address root-key)))]
+     (ha/<? (n/-resolve-chan (konserve-addr store
+                                            last-key
+                                            root-key))))))
 
 (defn add-hitchhiker-tree-handlers [store]
   (nippy/ensure-installed!)
@@ -146,7 +195,10 @@
           'hitchhiker.tree.messaging.DeleteOp
           msg/map->DeleteOp
           'hitchhiker.tree.Config
-          tree/map->Config})
+          tree/map->Config
+          'hitchhiker.tree.bootstrap.konserve.KonserveOpsAddr
+          (fn [{:keys [konserve-key]}]
+            (->KonserveOpsAddr store konserve-key))})
   (swap! (:write-handlers store)
          merge
          {'hitchhiker.tree.bootstrap.konserve.KonserveAddr
@@ -154,5 +206,7 @@
           'hitchhiker.tree.DataNode
           encode-data-node
           'hitchhiker.tree.IndexNode
-          encode-index-node})
+          encode-index-node
+          'hitchhiker.tree.bootstrap.konserve.KonserveOpsAddr
+          (fn [addr] (dissoc addr :store))})
   store)

@@ -67,6 +67,7 @@
 
 (defrecord IndexNode [children
                       storage-addr
+                      ops-storage-addr
                       op-buf
                       cfg
                       *last-key-cache]
@@ -81,6 +82,12 @@
     (assoc this
            :storage-addr (async/promise-chan)
            :*last-key-cache (cache)))
+
+  (-ops-dirty? [this]
+    (not (async/poll! ops-storage-addr)))
+
+  (-ops-dirty! [this]
+    (assoc this :ops-storage-addr (async/promise-chan)))
 
   n/INode
   (-last-key [this]
@@ -141,6 +148,7 @@
   [children op-buf cfg]
   (->IndexNode children
                (async/promise-chan)
+               (async/promise-chan)
                op-buf
                cfg
                (cache)))
@@ -172,6 +180,10 @@
     (assoc this
            :storage-addr (async/promise-chan)
            :*last-key-cache (cache)))
+
+  ; Data nodes have no ops buffer, no ops dirty
+  (-ops-dirty? [this] false)
+  (-ops-dirty! [this] this)
 
   n/INode
   (-last-key [this]
@@ -459,17 +471,22 @@
        :stats session})))
   ([tree backend stats]
    (ha/go-try
-    (if (n/-dirty? tree)
+    (if (or (n/-ops-dirty? tree) (n/-dirty? tree))
       (let [cleaned-children (if (data-node? tree)
                                (:children tree)
                                (->> (flush-children (:children tree) backend stats)
                                     ha/<?
                                     catvec))
-            cleaned-node (assoc tree :children cleaned-children)
-            new-addr (ha/<? (b/-write-node backend cleaned-node stats))]
-        (async/>!! (:storage-addr tree)
-                   new-addr)
-        new-addr)
+            cleaned-node (assoc tree :children cleaned-children)]
+        (if (n/-dirty? tree)
+          (let [[new-addr new-ops-addr] (ha/<? (b/-write-node backend cleaned-node stats))]
+            (async/>!! (:storage-addr tree) new-addr)
+            (when new-ops-addr
+              (async/>!! (:ops-storage-addr tree) new-ops-addr))
+            new-addr)
+          (let [new-ops-addr (ha/<? (b/-write-ops-buffer backend (async/poll! (:storage-addr tree)) (:op-buf cleaned-node) stats))]
+            (async/>!! (:ops-storage-addr cleaned-node) new-ops-addr)
+            cleaned-node)))
       tree))))
 
 ;; TODO merge this with the code above
@@ -494,7 +511,7 @@
        :stats session})))
   ([tree backend stats root-node?]
    (ha/go-try
-    (if (n/-dirty? tree)
+    (if (or (n/-ops-dirty? tree) (n/-dirty? tree))
       (let [cleaned-children (if (data-node? tree)
                                (:children tree)
                                ;; TODO throw on nested errors
@@ -504,10 +521,16 @@
             cleaned-node (assoc tree :children cleaned-children)]
         (if root-node?
           cleaned-node
-          (let [new-addr (ha/<? (b/-write-node backend cleaned-node stats))]
-            (async/>!! (:storage-addr tree)
-                       new-addr)
-            new-addr)))
+          (if (n/-dirty? cleaned-node)
+            (let [[new-addr new-ops-addr] (ha/<? (b/-write-node backend cleaned-node stats))]
+              (async/>!! (:storage-addr tree)
+                         new-addr)
+              (when new-ops-addr
+                (async/>!! (:ops-storage-addr tree) new-ops-addr))
+              new-addr)
+            (let [new-ops-addr (ha/<? (b/-write-ops-buffer backend (async/poll! (:storage-addr tree)) (:op-buf tree) stats))]
+              (async/>!! (:ops-storage-addr tree) new-ops-addr)
+              cleaned-node))))
       tree))))
 
 (ha/if-async?

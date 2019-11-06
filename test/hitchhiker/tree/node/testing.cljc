@@ -8,6 +8,8 @@
   n/IAddress
   (-dirty? [this] false)
   (-dirty! [this] this)
+  (-ops-dirty? [this] false)
+  (-ops-dirty! [this] this)
   (-resolve-chan [_] resolve-ch)
   n/INode
   (-last-key [_] last-key))

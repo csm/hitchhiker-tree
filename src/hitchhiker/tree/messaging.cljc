@@ -47,7 +47,7 @@
         (<= (+ (count msgs) (count (:op-buf tree)))
             (get-in tree [:cfg :op-buf-size])) ; will there be enough space?
         (-> tree
-            (n/-dirty!)
+            (n/-ops-dirty!)
             (update-in [:op-buf] into msgs))
         :else ;; overflow, should be IndexNode
         (do (assert (tree/index-node? tree))
@@ -165,9 +165,9 @@
    (lookup tree key nil))
   ([tree key not-found]
    (ha/go-try
-    (let [path (ha/<? (tree/lookup-path tree key))
-          expanded (apply-ops-in-path path)]
-      (get expanded key not-found)))))
+     (let [path (ha/<? (tree/lookup-path tree key))
+           expanded (apply-ops-in-path path)]
+       (get expanded key not-found)))))
 
 (defn insert
   [tree key value]
@@ -221,10 +221,10 @@
         (concat first-elements next-elements)))
 
 
-   (defn lookup-fwd-iter
-     [tree key]
-     (let [path (tree/lookup-path tree key)]
-       (when path
-         (drop-while (fn [[k v]]
-                       (neg? (c/-compare k key)))
-                     (forward-iterator path)))))))
+  (defn lookup-fwd-iter
+    [tree key]
+    (let [path (tree/lookup-path tree key)]
+      (when path
+        (drop-while (fn [[k v]]
+                      (neg? (c/-compare k key)))
+                    (forward-iterator path)))))))

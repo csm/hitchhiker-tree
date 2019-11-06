@@ -7,7 +7,8 @@
             [hitchhiker.tree.utils.async :as ha]
             hitchhiker.tree.core-test
             [hitchhiker.tree.messaging :as msg]
-            [taoensso.carmine :as car :refer [wcar]]))
+            [taoensso.carmine :as car :refer [wcar]]
+            [clojure.core.async :as async]))
 
 (defn insert
   [t k]
@@ -41,7 +42,7 @@
                                              (when root
                                                (wcar {} (redis/drop-ref root)))
                                              #_(println "flush")
-                                             [t (ha/<?? (:storage-addr t)) set])
+                                             [t (async/poll! (:storage-addr t)) set])
                                     :add (do #_(println "add") [(ha/<?? (insert t x-reduced)) root (conj set x-reduced)])
                                     :del (do #_(println "del") [(ha/<?? (msg/delete t x-reduced)) root (disj set x-reduced)]))))
                               [(ha/<?? (core/b-tree (core/->Config 3 3 2))) nil #{}]
@@ -103,8 +104,8 @@
                     (take-last  125)
                     first))
       (println (lookup-fwd-iter b-tree -1))
-      (println (sort s))
-      ))
+      (println (sort s))))
+
   (defn trial []
     (let [opseq (read-string (slurp "broken-data.edn"))
           [b-tree root] (reduce (fn [[t root] [op x]]
@@ -118,8 +119,8 @@
                                                [t @(:storage-addr t)])
                                       :add (do (println "about to add" x-reduced "...")
                                                (let [x [(insert t x-reduced) root]]
-                                                 (println "added") x
-                                                 ))
+                                                 (println "added") x))
+
                                       :del (do (println "about to del" x-reduced "...")
                                                (let [x [(msg/delete t x-reduced) root]]
                                                  (println "deled") x)))))

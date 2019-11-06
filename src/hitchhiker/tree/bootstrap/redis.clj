@@ -25,18 +25,19 @@
   Somehow, we track when root pointers are older than a certain time, so that
   we can delete them automatically."
   (:require
-   [clojure.core.cache :as cache]
-   [clojure.string :as str]
-   [hitchhiker.tree.utils.async :as ha]
-   [hitchhiker.tree :as tree]
-   [hitchhiker.tree.node :as n]
-   [hitchhiker.tree.op :as op]
-   [hitchhiker.tree.backend :as b]
-   [hitchhiker.tree.codec.nippy :as hn]
-   [clojure.core.async :refer [promise-chan] :as async]
-   [hitchhiker.tree.messaging :as msg]
-   [taoensso.carmine :as car :refer [wcar]]
-   [taoensso.nippy :as nippy]))
+    [clojure.core.cache :as cache]
+    [clojure.string :as str]
+    [hitchhiker.tree.utils.async :as ha]
+    [hitchhiker.tree :as tree]
+    [hitchhiker.tree.node :as n]
+    [hitchhiker.tree.op :as op]
+    [hitchhiker.tree.backend :as b]
+    [hitchhiker.tree.codec.nippy :as hn]
+    [clojure.core.async :refer [promise-chan] :as async]
+    [hitchhiker.tree.messaging :as msg]
+    [taoensso.carmine :as car :refer [wcar]]
+    [taoensso.nippy :as nippy]
+    [hitchhiker.tree :as core]))
 
 (defn add-refs
   [node-key children-keys]
@@ -174,6 +175,9 @@
                       storage-addr]
   n/IAddress
   (-dirty? [_] false)
+  (-dirty! [this] this)
+  (-ops-dirty? [_] false)
+  (-ops-dirty! [this] this)
   (-resolve-chan [_]
     (ha/go-try (-> (totally-fetch redis-key)
                    (assoc :storage-addr (synthesize-storage-addr redis-key)))))
@@ -211,23 +215,26 @@
     node)
   (-write-node [_ node session]
     (ha/go-try
-     (swap! session update-in [:writes] inc)
-     (let [key (str (java.util.UUID/randomUUID))
-           addr (redis-addr (n/-last-key node) key)]
-                                        ;(.submit service #(wcar {} (car/set key node)))
-       (when (some #(not (satisfies? op/IOperation %)) (:op-buf node))
-         (println (str "Found a broken node, has " (count (:op-buf node)) " ops"))
-         (println (str "The node data is " node))
-         (println (str "and " (:op-buf node))))
-       (wcar {}
-             (car/set key node)
-             (when (tree/index-node? node)
-               (add-refs key
-                         (for [child (:children node)
-                               :let [child-key (ha/<?? (:storage-addr child))]]
-                           child-key))))
-       (seed-cache! key (ha/go-try node))
-       addr)))
+      (swap! session update-in [:writes] inc)
+      (let [key (str (java.util.UUID/randomUUID))
+            addr (redis-addr (n/-last-key node) key)]
+         ;(.submit service #(wcar {} (car/set key node)))
+        (when (some #(not (satisfies? op/IOperation %)) (:op-buf node))
+          (println (str "Found a broken node, has " (count (:op-buf node)) " ops"))
+          (println (str "The node data is " node))
+          (println (str "and " (:op-buf node))))
+        (wcar {}
+              (car/set key node)
+              (when (tree/index-node? node)
+                (add-refs key
+                          (for [child (:children node)
+                                :let [child-key (async/poll! (:storage-addr child))]]
+                            child-key))))
+        (seed-cache! key (ha/go-try node))
+        [addr (when (core/index-node? node) addr)])))
+  ; just keep ops in the node itself for redis
+  (-write-ops-buffer [_ node-address ops-buffer session]
+    (ha/go-try node-address))
   (-delete-addr [_ addr session]
     (wcar {} (car/del addr))
     (swap! session update-in :deletes inc)))
