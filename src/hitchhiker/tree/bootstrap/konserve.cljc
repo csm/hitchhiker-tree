@@ -30,7 +30,7 @@
 (defn encode-index-node
   [node]
   (-> node
-      (nilify [:storage-addr :*last-key-cache :ops-storage-addr])
+      (nilify [:storage-addr :*last-key-cache :op-buf :ops-storage-addr])
       (assoc :children (mapv encode (:children node)))))
 
 (defn encode-data-node
@@ -134,7 +134,6 @@
       (swap! session update-in [:writes] inc)
       (let [pnode (encode node)
             id (h/uuid pnode)
-            pnode (nilify pnode [:op-buf])
             ch (k/assoc-in store [id] pnode)
             addr (konserve-addr store (n/-last-key node) id)
             op-ch (when (core/index-node? node)
