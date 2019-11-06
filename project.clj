@@ -1,4 +1,4 @@
-(defproject io.replikativ/hitchhiker-tree "0.1.4"
+(defproject com.github.csm/hitchhiker-tree "0.1.5-alpha1"
   :description "A Hitchhiker Tree Library"
   :url "https://github.com/dgrnbrg/hitchhiker-tree"
   :license {:name "Eclipse Public License"
@@ -42,7 +42,7 @@
                 :compiler {:main hitchhiker.tree.core
                            :asset-path "js/out"
                            :output-to "resources/public/js/core.js"
-                           :output-dir "resources/public/js/out" }}
+                           :output-dir "resources/public/js/out"}}
                ;; inspired by datascript project.clj
                {:id "test"
                 :source-paths ["src" "test"]
