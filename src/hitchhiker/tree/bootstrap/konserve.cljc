@@ -67,18 +67,11 @@
 
   (-resolve-chan [_]
     (ha/go-try
-      (let [cache (:cache store)]
-        (if-let [v (cache/lookup @cache konserve-key)]
-          (do
-            (swap! cache cache/hit konserve-key)
-            v)
-          (let [ch (k/get-in store [konserve-key])
-                result (ha/if-async?
-                         (ha/<? ch)
-                         (async/<!! ch))]
-            (when result
-              (swap! cache cache/miss konserve-key result))
-            result))))))
+      (let [ch (k/get-in store [:ops konserve-key])
+            result (ha/if-async?
+                     (ha/<? ch)
+                     (async/<!! ch))]
+        result))))
 
 (defn konserve-ops-addr
   [store konserve-key]
@@ -144,8 +137,8 @@
     (ha/go-try
       (swap! session update :writes inc)
       (let [buffer (into [] ops-buffer)
-            id (str "ops." (:konserve-key node-address))
-            ch (k/assoc-in store [id] buffer)]
+            id (:konserve-key node-address)
+            ch (k/assoc-in store [:ops id] buffer)]
         (ha/<? ch)
         (konserve-ops-addr store id))))
   (-delete-addr [_ addr session]
