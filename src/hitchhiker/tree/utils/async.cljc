@@ -52,8 +52,8 @@
   throwable error."
   [ch]
   (if-async?
-      `(throw-if-exception (async/<! ~ch))
-    ch))
+    `(throw-if-exception (async/<! ~ch))
+    `(throw-if-exception ~ch)))
 
 #?(:clj
    (defmacro <??
@@ -61,8 +61,8 @@
   throwable error."
      [ch]
      (if-async?
-         `(throw-if-exception (async/<!! ~ch))
-       ch)))
+       `(throw-if-exception (async/<!! ~ch))
+       `(throw-if-exception ~ch))))
 
 (defn reduce<
   "Reduces over a sequence s with a go function go-f given the initial value
