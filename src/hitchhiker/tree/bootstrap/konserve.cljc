@@ -137,7 +137,7 @@
     (ha/go-try
       (swap! session update :writes inc)
       (let [buffer (into [] ops-buffer)
-            id (:konserve-key node-address)
+            id (or (:konserve-key node-address) node-address)
             ch (k/assoc-in store [:ops id] buffer)]
         (ha/<? ch)
         (konserve-ops-addr store id))))
