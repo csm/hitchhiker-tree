@@ -4,6 +4,7 @@
     [clojure.core.rrb-vector :refer [catvec subvec]]
     [konserve.cache :as k]
     [konserve.memory :refer [new-mem-store]]
+    [konserve.protocols :as kp]
     [hasch.core :as h]
     [clojure.set :as set]
     [hitchhiker.tree.messaging :as msg]
@@ -67,7 +68,8 @@
 
   (-resolve-chan [_]
     (ha/go-try
-      (let [ch (k/get-in store [:ops konserve-key])
+      ; bypass the cache, because it is based off the first key in keyvec
+      (let [ch (kp/-get-in store [:ops konserve-key])
             result (ha/if-async?
                      (ha/<? ch)
                      (async/<!! ch))]
@@ -100,7 +102,7 @@
                               (async/<!! ch))
                             :storage-addr (synthesize-storage-address this))))
             node (if (tree/index-node? node)
-                   (let [ops-addr (konserve-ops-addr store (str "ops." konserve-key))]
+                   (let [ops-addr (konserve-ops-addr store konserve-key)]
                      (if-let [op-buf (some-> ops-addr
                                              (n/-resolve-chan)
                                              (ha/<?))]
@@ -138,7 +140,8 @@
       (swap! session update :writes inc)
       (let [buffer (into [] ops-buffer)
             id (or (:konserve-key node-address) node-address)
-            ch (k/assoc-in store [:ops id] buffer)]
+            ; bypass the cache because it does dumb things with the first key in keyvec
+            ch (kp/-assoc-in store [:ops id] buffer)]
         (ha/<? ch)
         (konserve-ops-addr store id))))
   (-delete-addr [_ addr session]
