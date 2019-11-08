@@ -428,7 +428,6 @@
                                       cfg)
                           (pop init-path)))
                  (recur (index-node (catvec (conj old-left-children merged)
-
                                             old-right-children)
                                     op-buf
                                     cfg)
@@ -520,7 +519,12 @@
                                     catvec))
             cleaned-node (assoc tree :children cleaned-children)]
         (if root-node?
-          cleaned-node
+          (if (n/-ops-dirty? tree)
+            (let [new-ops-addr (ha/<? (b/-write-ops-buffer backend (or (:root-node-id cleaned-node) ::ROOT)
+                                                           (:op-buf cleaned-node) stats))]
+              (async/>!! (:ops-storage-addr cleaned-node) new-ops-addr)
+              cleaned-node)
+            cleaned-node)
           (if (n/-dirty? cleaned-node)
             (let [[new-addr new-ops-addr] (ha/<? (b/-write-node backend cleaned-node stats))]
               (async/>!! (:storage-addr tree)
@@ -528,9 +532,7 @@
               (when new-ops-addr
                 (async/>!! (:ops-storage-addr tree) new-ops-addr))
               new-addr)
-            (let [new-ops-addr (ha/<? (b/-write-ops-buffer backend (async/poll! (:storage-addr tree)) (:op-buf tree) stats))]
-              (async/>!! (:ops-storage-addr tree) new-ops-addr)
-              cleaned-node))))
+            cleaned-node)))
       tree))))
 
 (ha/if-async?
